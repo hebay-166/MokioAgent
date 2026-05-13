@@ -17,7 +17,6 @@ FILES: dict[str, str] = {}
 
 class AgentState(TypedDict):
     messages: list[BaseMessage]
-    reflection: str
 
 
 def reset_workspace() -> None:
@@ -60,14 +59,6 @@ SYSTEM_PROMPT = """
 你是一个 ReAct 文件整理助手。
 目标：检查 inbox，移动 inbox/a.txt 到 archive/a.txt，查看整理后的目录，然后总结。
 每一轮最多调用一个工具。
-如果有 reflection note，请优先参考它决定下一步。
-""".strip()
-
-REFLECTION_PROMPT = """
-你是 reviewer。根据最近的工具结果，给 agent 一句下一步建议。
-目标：检查 inbox -> 移动 inbox/a.txt 到 archive/a.txt -> 查看整理后的目录 -> 总结。
-如果已经看到 archive/a.txt，请提醒 agent 停止调用工具并总结。
-只输出一句 reflection note。
 """.strip()
 
 
@@ -75,7 +66,7 @@ def main() -> None:
     task = " ".join(sys.argv[1:]).strip() or DEFAULT_TASK
     reset_workspace()
 
-    print("=== 03. LangGraph ReAct + Reflection Node ===")
+    print("=== 02.5 LangGraph ReAct：agent node + tools node ===")
     print("\n用户任务:")
     print(task)
     print("\n运行前 workspace:")
@@ -83,16 +74,12 @@ def main() -> None:
 
     tools = [list_files, move_file]
     tool_map = {item.name: item for item in tools}
-    base_llm = load_llm()
-    tool_llm = base_llm.bind_tools(tools)
+    llm = load_llm().bind_tools(tools)
 
     def agent_node(state: AgentState) -> AgentState:
         print("\n[agent] 模型思考")
-        prompt = SYSTEM_PROMPT
-        if state["reflection"]:
-            prompt += f"\n\nReflection note: {state['reflection']}"
-        response = tool_llm.invoke([SystemMessage(content=prompt), *state["messages"]])
-        return {"messages": [*state["messages"], response], "reflection": state["reflection"]}
+        response = llm.invoke([SystemMessage(content=SYSTEM_PROMPT), *state["messages"]])
+        return {"messages": [*state["messages"], response]}
 
     def tools_node(state: AgentState) -> AgentState:
         response = state["messages"][-1]
@@ -112,19 +99,7 @@ def main() -> None:
                 )
             )
 
-        return {"messages": new_messages, "reflection": state["reflection"]}
-
-    def reflection_node(state: AgentState) -> AgentState:
-        print("\n[reflection] 复盘工具结果")
-        transcript = "\n".join(str(message.content) for message in state["messages"][-4:])
-        note = base_llm.invoke(
-            [
-                SystemMessage(content=REFLECTION_PROMPT),
-                HumanMessage(content=transcript),
-            ]
-        ).content
-        print(note)
-        return {"messages": state["messages"], "reflection": str(note)}
+        return {"messages": new_messages}
 
     def should_continue(state: AgentState) -> str:
         last_message = state["messages"][-1]
@@ -133,14 +108,12 @@ def main() -> None:
     graph = StateGraph(AgentState)
     graph.add_node("agent", agent_node)
     graph.add_node("tools", tools_node)
-    graph.add_node("reflection", reflection_node)
     graph.add_edge(START, "agent")
     graph.add_conditional_edges("agent", should_continue)
-    graph.add_edge("tools", "reflection")
-    graph.add_edge("reflection", "agent")
+    graph.add_edge("tools", "agent")
 
     result = graph.compile().invoke(
-        {"messages": [HumanMessage(content=task)], "reflection": ""},
+        {"messages": [HumanMessage(content=task)]},
         config={"recursion_limit": 12},
     )
 

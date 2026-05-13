@@ -1,42 +1,62 @@
 from __future__ import annotations
 
+import os
 import re
 import sys
+from pathlib import Path
 from typing import TypedDict
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from dotenv import load_dotenv
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
-from agent_loop_common import (
-    DEFAULT_TASK,
-    TOOL_REGISTRY,
-    load_llm_config,
-    print_tool_call,
-    print_workspace,
-    reset_demo_workspace,
-    safe_print,
-)
+DEFAULT_TASK = "请检查 inbox，把 a.txt 移动到 archive，然后告诉我整理后的目录变化。"
+FILES: dict[str, str] = {}
 
 
-class PlanState(TypedDict):
+class AgentState(TypedDict):
     task: str
     plan: list[str]
-    current_step: int
-    observations: list[str]
-    final_answer: str
+    messages: list[BaseMessage]
+    reflection: str
 
 
-PLANNER_PROMPT = """
-把用户任务拆成 3 个可执行步骤。
-必须覆盖：检查 inbox、移动 a.txt 到 archive、查看整理后的目录。
-每行一个步骤，不要写额外解释。
-""".strip()
+def reset_workspace() -> None:
+    FILES.clear()
+    FILES["inbox/a.txt"] = "Hello from MokioClaw AgentLoop demo."
 
-REVIEWER_PROMPT = """
-你是 replanner/reviewer。
-根据计划和执行观察，判断是否完成；如果完成，用中文给出简短最终总结。
-""".strip()
+
+def show_workspace() -> str:
+    return "\n".join(f"- {path}" for path in sorted(FILES)) or "(empty)"
+
+
+@tool
+def list_files(path: str = ".") -> str:
+    """List files in the demo workspace."""
+    prefix = "" if path == "." else path.strip("/") + "/"
+    files = [name for name in sorted(FILES) if name.startswith(prefix)]
+    return "\n".join(f"- {name}" for name in files) or "(empty)"
+
+
+@tool
+def move_file(source: str, target: str) -> str:
+    """Move a file in the demo workspace."""
+    content = FILES.pop(source)
+    target_path = target if "." in Path(target).name else f"{target.rstrip('/')}/{Path(source).name}"
+    FILES[target_path] = content
+    return f"moved {source} -> {target_path}"
+
+
+def load_llm() -> ChatOpenAI:
+    load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+    return ChatOpenAI(
+        model=os.getenv("MODEL", "qwen3.6-flash"),
+        base_url=os.getenv("BASE_URL"),
+        api_key=os.getenv("API_KEY"),
+        temperature=0,
+    )
 
 
 def parse_plan(text: str) -> list[str]:
@@ -45,92 +65,124 @@ def parse_plan(text: str) -> list[str]:
         line = re.sub(r"^\s*[-*\d.、)]+\s*", "", line).strip()
         if line:
             steps.append(line)
-    return steps or ["检查 inbox", "移动 inbox/a.txt 到 archive/a.txt", "查看整理后的目录"]
+    return steps or ["检查 inbox", "移动 a.txt 到 archive", "查看整理后的目录"]
+
+
+PLANNER_PROMPT = """
+把用户任务拆成 3 个步骤。
+必须覆盖：检查 inbox、移动 a.txt 到 archive、查看整理后的目录。
+每行一个步骤，不要写额外解释。
+""".strip()
+
+SYSTEM_PROMPT = """
+你是一个 ReAct executor。
+你会收到计划，请按计划用工具一步步完成任务。
+每一轮最多调用一个工具。
+如果有 reflection note，请优先参考它决定下一步。
+""".strip()
+
+REFLECTION_PROMPT = """
+你是 reviewer。根据计划和最近工具结果，给 executor 一句下一步建议。
+如果已经看到 archive/a.txt，请提醒 executor 停止调用工具并总结。
+只输出一句 reflection note。
+""".strip()
 
 
 def main() -> None:
     task = " ".join(sys.argv[1:]).strip() or DEFAULT_TASK
-    reset_demo_workspace()
+    reset_workspace()
 
-    safe_print("=== 04. LangGraph Plan-and-Execute ===")
-    safe_print("\n用户任务:")
-    safe_print(task)
-    print_workspace("运行前的 demo workspace")
+    print("=== 04. LangGraph Plan + ReAct + Reflection ===")
+    print("\n用户任务:")
+    print(task)
+    print("\n运行前 workspace:")
+    print(show_workspace())
 
-    llm = ChatOpenAI(**load_llm_config(), temperature=0)
+    tools = [list_files, move_file]
+    tool_map = {item.name: item for item in tools}
+    base_llm = load_llm()
+    tool_llm = base_llm.bind_tools(tools)
 
-    def planner_node(state: PlanState) -> PlanState:
-        safe_print("\n[planner] 生成计划")
-        response = llm.invoke(
+    def planner_node(state: AgentState) -> AgentState:
+        print("\n[planner] 生成计划")
+        response = base_llm.invoke(
             [SystemMessage(content=PLANNER_PROMPT), HumanMessage(content=state["task"])]
         )
         plan = parse_plan(str(response.content))
         for index, step in enumerate(plan, start=1):
-            safe_print(f"{index}. {step}")
-        return {**state, "plan": plan}
+            print(f"{index}. {step}")
+        plan_text = "\n".join(f"{index}. {step}" for index, step in enumerate(plan, start=1))
+        return {
+            **state,
+            "plan": plan,
+            "messages": [HumanMessage(content=f"用户任务：{state['task']}\n\n计划：\n{plan_text}")],
+        }
 
-    def executor_node(state: PlanState) -> PlanState:
-        step = state["plan"][state["current_step"]]
-        safe_print(f"\n[executor] 执行步骤 {state['current_step'] + 1}: {step}")
+    def agent_node(state: AgentState) -> AgentState:
+        print("\n[agent] 按计划执行下一步")
+        prompt = SYSTEM_PROMPT
+        if state["reflection"]:
+            prompt += f"\n\nReflection note: {state['reflection']}"
+        response = tool_llm.invoke([SystemMessage(content=prompt), *state["messages"]])
+        return {**state, "messages": [*state["messages"], response]}
 
-        observations = list(state["observations"])
+    def tools_node(state: AgentState) -> AgentState:
+        response = state["messages"][-1]
+        new_messages = list(state["messages"])
 
-        if state["current_step"] == 0:
-            tool_call = {"name": "list_files", "args": {"path": "inbox"}}
-        elif state["current_step"] == 1:
-            tool_call = {
-                "name": "move_file",
-                "args": {"source": "inbox/a.txt", "target": "archive/a.txt"},
-            }
-        else:
-            tool_call = {"name": "list_files", "args": {"path": "."}}
+        for tool_call in response.tool_calls:
+            print("\n[tools] 执行工具")
+            print(f"tool_name = {tool_call['name']}")
+            print(f"tool_args = {tool_call['args']}")
+            result = tool_map[tool_call["name"]].invoke(tool_call["args"])
+            print(result)
+            new_messages.append(
+                ToolMessage(
+                    content=str(result),
+                    name=tool_call["name"],
+                    tool_call_id=tool_call["id"],
+                )
+            )
 
-        print_tool_call(tool_call)
-        result = TOOL_REGISTRY[tool_call["name"]].invoke(tool_call["args"])
-        safe_print(result)
-        observations.append(f"{step} -> {result}")
+        return {**state, "messages": new_messages}
 
-        return {**state, "observations": observations}
-
-    def reviewer_node(state: PlanState) -> PlanState:
-        next_step = state["current_step"] + 1
-        if next_step < len(state["plan"]):
-            safe_print("\n[reviewer] 当前步骤完成，继续下一步")
-            return {**state, "current_step": next_step}
-
-        safe_print("\n[reviewer] 计划完成，生成最终总结")
-        response = llm.invoke(
+    def reflection_node(state: AgentState) -> AgentState:
+        print("\n[reflection] 复盘计划和工具结果")
+        plan_text = "\n".join(state["plan"])
+        transcript = "\n".join(str(message.content) for message in state["messages"][-4:])
+        note = base_llm.invoke(
             [
-                SystemMessage(content=REVIEWER_PROMPT),
-                HumanMessage(content="\n".join(state["observations"])),
+                SystemMessage(content=REFLECTION_PROMPT),
+                HumanMessage(content=f"计划：\n{plan_text}\n\n最近记录：\n{transcript}"),
             ]
-        )
-        safe_print(response.content)
-        return {**state, "current_step": next_step, "final_answer": str(response.content)}
+        ).content
+        print(note)
+        return {**state, "reflection": str(note)}
 
-    def should_continue(state: PlanState) -> str:
-        return END if state["final_answer"] else "executor"
+    def should_continue(state: AgentState) -> str:
+        last_message = state["messages"][-1]
+        return "tools" if getattr(last_message, "tool_calls", None) else END
 
-    graph = StateGraph(PlanState)
+    graph = StateGraph(AgentState)
     graph.add_node("planner", planner_node)
-    graph.add_node("executor", executor_node)
-    graph.add_node("reviewer", reviewer_node)
+    graph.add_node("agent", agent_node)
+    graph.add_node("tools", tools_node)
+    graph.add_node("reflection", reflection_node)
     graph.add_edge(START, "planner")
-    graph.add_edge("planner", "executor")
-    graph.add_edge("executor", "reviewer")
-    graph.add_conditional_edges("reviewer", should_continue)
+    graph.add_edge("planner", "agent")
+    graph.add_conditional_edges("agent", should_continue)
+    graph.add_edge("tools", "reflection")
+    graph.add_edge("reflection", "agent")
 
-    graph.compile().invoke(
-        {
-            "task": task,
-            "plan": [],
-            "current_step": 0,
-            "observations": [],
-            "final_answer": "",
-        },
+    result = graph.compile().invoke(
+        {"task": task, "plan": [], "messages": [], "reflection": ""},
         config={"recursion_limit": 12},
     )
-    print_workspace("运行后的 demo workspace")
+
+    print("\n最终回答:")
+    print(result["messages"][-1].content)
+    print("\n运行后 workspace:")
+    print(show_workspace())
 
 
 if __name__ == "__main__":
