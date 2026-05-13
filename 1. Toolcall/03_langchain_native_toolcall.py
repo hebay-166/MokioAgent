@@ -9,11 +9,12 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
-DEFAULT_USER_PROMPT = "帮我查一下 Beijing 的天气"
+DEFAULT_USER_PROMPT = "帮我查一下 Beijing 的天气和时间"
 
 SYSTEM_PROMPT = """
 你是一个助手。
 如果用户询问天气，请调用 get_weather 工具，不要自己编造天气。
+如果用户询问时间，请调用 get_time 工具，不要自己编造时间。
 """.strip()
 
 
@@ -26,6 +27,16 @@ def get_weather(city: str) -> str:
         "Hangzhou": "小雨，22 度",
     }
     return f"{city} 的天气是：{weather.get(city, '未知天气')}"
+
+@tool
+def get_time(city: str) -> str: 
+    """Get the current time for a city."""
+    time = {
+        "Beijing": "14:00",
+        "Shanghai": "14:00",
+        "Hangzhou": "14:00",
+    }
+    return f"{city} 的当前时间是：{time.get(city, '未知时间')}"
 
 # @tool
 # def get_weather(city: str) -> str:
@@ -56,7 +67,7 @@ def main() -> None:
     print("\n用户请求:")
     print(user_prompt)
 
-    tools = [get_weather]
+    tools = [get_weather, get_time]
     llm = load_llm().bind_tools(tools)
 
     messages = [

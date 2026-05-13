@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import TypedDict
@@ -13,7 +14,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 
 DEFAULT_TASK = "请检查 inbox，把 a.txt 移动到 archive，然后告诉我整理后的目录变化。"
-FILES: dict[str, str] = {}
+WORKSPACE = Path(__file__).resolve().parent / "demo_workspace"
 
 
 class AgentState(TypedDict):
@@ -24,29 +25,50 @@ class AgentState(TypedDict):
 
 
 def reset_workspace() -> None:
-    FILES.clear()
-    FILES["inbox/a.txt"] = "Hello from MokioClaw AgentLoop demo."
+    if WORKSPACE.exists():
+        shutil.rmtree(WORKSPACE)
+    (WORKSPACE / "inbox").mkdir(parents=True)
+    (WORKSPACE / "archive").mkdir()
+    (WORKSPACE / "inbox" / "a.txt").write_text(
+        "Hello from MokioClaw AgentLoop demo.",
+        encoding="utf-8",
+    )
 
 
 def show_workspace() -> str:
-    return "\n".join(f"- {path}" for path in sorted(FILES)) or "(empty)"
+    items = sorted(WORKSPACE.rglob("*"))
+    lines = []
+    for item in items:
+        rel = item.relative_to(WORKSPACE).as_posix()
+        lines.append(f"- {rel}/" if item.is_dir() else f"- {rel}")
+    return "\n".join(lines) or "(empty)"
+
+
+def workspace_path(path: str) -> Path:
+    path = path.strip().replace("\\", "/")
+    return WORKSPACE if path == "." else WORKSPACE / path.strip("/")
 
 
 @tool
 def list_files(path: str = ".") -> str:
     """List files in the demo workspace."""
-    prefix = "" if path == "." else path.strip("/") + "/"
-    files = [name for name in sorted(FILES) if name.startswith(prefix)]
-    return "\n".join(f"- {name}" for name in files) or "(empty)"
+    target = workspace_path(path)
+    if target.is_file():
+        return target.relative_to(WORKSPACE).as_posix()
+    files = sorted(item for item in target.rglob("*") if item.is_file())
+    return "\n".join(f"- {item.relative_to(WORKSPACE).as_posix()}" for item in files) or "(empty)"
 
 
 @tool
 def move_file(source: str, target: str) -> str:
     """Move a file in the demo workspace."""
-    content = FILES.pop(source)
-    target_path = target if "." in Path(target).name else f"{target.rstrip('/')}/{Path(source).name}"
-    FILES[target_path] = content
-    return f"moved {source} -> {target_path}"
+    source_path = workspace_path(source)
+    target_path = workspace_path(target)
+    if "." not in target_path.name:
+        target_path = target_path / source_path.name
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source_path), str(target_path))
+    return f"moved {source} -> {target_path.relative_to(WORKSPACE).as_posix()}"
 
 
 def load_llm() -> ChatOpenAI:
@@ -108,10 +130,14 @@ def main() -> None:
         response = base_llm.invoke(
             [SystemMessage(content=PLANNER_PROMPT), HumanMessage(content=state["task"])]
         )
+
         plan = parse_plan(str(response.content))
+
         for index, step in enumerate(plan, start=1):
             print(f"{index}. {step}")
+
         plan_text = "\n".join(f"{index}. {step}" for index, step in enumerate(plan, start=1))
+
         return {
             **state,
             "plan": plan,
@@ -121,8 +147,10 @@ def main() -> None:
     def agent_node(state: AgentState) -> AgentState:
         print("\n[agent] 按计划执行下一步")
         prompt = SYSTEM_PROMPT
+
         if state["reflection"]:
             prompt += f"\n\nReflection note: {state['reflection']}"
+
         response = tool_llm.invoke([SystemMessage(content=prompt), *state["messages"]])
         return {**state, "messages": [*state["messages"], response]}
 
@@ -168,6 +196,7 @@ def main() -> None:
     graph.add_node("agent", agent_node)
     graph.add_node("tools", tools_node)
     graph.add_node("reflection", reflection_node)
+    
     graph.add_edge(START, "planner")
     graph.add_edge("planner", "agent")
     graph.add_conditional_edges("agent", should_continue)
@@ -176,7 +205,7 @@ def main() -> None:
 
     result = graph.compile().invoke(
         {"task": task, "plan": [], "messages": [], "reflection": ""},
-        config={"recursion_limit": 12},
+        config={"recursion_limit": 50},
     )
 
     print("\n最终回答:")
