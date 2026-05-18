@@ -254,6 +254,10 @@ def _format_tool_result(result: Any) -> str:
         lines.append("stderr:\n" + _shorten(result["stderr"], 500))
     if "todos" in result:
         lines.append(f"todos: {len(result['todos'])} item(s)")
+    if "heading" in result:
+        lines.append(f"heading: {result['heading']}")
+    if "content" in result and result["content"]:
+        lines.append("content:\n" + _shorten(result["content"], 500))
     if "answer" in result and result["answer"]:
         lines.append("answer:\n" + _shorten(result["answer"], 500))
     if "results" in result:

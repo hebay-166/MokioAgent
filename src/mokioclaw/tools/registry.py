@@ -6,6 +6,7 @@ from mokioclaw.core.state import RuntimeState
 from mokioclaw.tools.bash_tool import bash_tool_description, run_bash
 from mokioclaw.tools.file_tools import edit_file, read_file, write_file
 from mokioclaw.tools.grep_tool import grep
+from mokioclaw.tools.notepad_tool import append_notepad, read_notepad
 from mokioclaw.tools.web_search_tool import build_web_search_tool
 
 
@@ -38,6 +39,16 @@ def build_tools(state: RuntimeState) -> list[StructuredTool]:
             func=lambda command, timeout_seconds=10: run_bash(state, command, timeout_seconds),
             description=bash_tool_description(),
         ),
+        StructuredTool.from_function(
+            name="NotepadReadTool",
+            func=lambda: read_notepad(state),
+            description="Read the durable workspace notepad from NOTEPAD.md.",
+        ),
+        StructuredTool.from_function(
+            name="NotepadAppendTool",
+            func=lambda heading, content: append_notepad(state, heading, content),
+            description="Append a durable markdown note to NOTEPAD.md. Args: heading, content.",
+        ),
     ]
 
 
@@ -59,6 +70,11 @@ def build_read_only_tools(state: RuntimeState) -> list[StructuredTool]:
             name="BashTool",
             func=lambda command, timeout_seconds=10: run_bash(state, command, timeout_seconds),
             description=bash_tool_description(),
+        ),
+        StructuredTool.from_function(
+            name="NotepadReadTool",
+            func=lambda: read_notepad(state),
+            description="Read the durable workspace notepad from NOTEPAD.md.",
         ),
         build_web_search_tool(),
     ]

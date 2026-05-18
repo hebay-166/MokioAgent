@@ -48,6 +48,9 @@ Rules:
 - Use FileReadTool before editing existing files.
 - Use FileEditTool for focused edits.
 - Use BashTool for non-interactive checks.
+- Use NotepadAppendTool to record durable findings, decisions, important files,
+  blockers, and next-step context that should survive compression.
+- Use NotepadReadTool when you need to recover prior notes.
 - BashTool description tells you the current platform shell. Follow it exactly:
   use cmd syntax on Windows, and POSIX shell syntax on macOS/Linux.
 - BashTool already runs inside the workspace. Never run "cd /workspace",
@@ -66,6 +69,7 @@ web. You must not modify files.
 
 Rules:
 - Check the actual workspace, not only the previous agent summaries.
+- Read NOTEPAD.md with NotepadReadTool when prior durable context matters.
 - Run the provided verification commands when they are relevant.
 - For researched content, confirm the output cites useful sources.
 - Return only JSON with these keys:

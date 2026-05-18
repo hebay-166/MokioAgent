@@ -11,7 +11,8 @@ from mokioclaw.graph.state import MokioGraphState
 from mokioclaw.prompts.stage3 import CODE_AGENT_PROMPT
 from mokioclaw.providers.openai_provider import create_model
 from mokioclaw.tools import build_tools
-from mokioclaw.tools.todo_tool import update_todo
+from mokioclaw.tools.notepad_tool import read_notepad
+from mokioclaw.tools.todo_tool import persist_todos, update_todo
 
 
 Writer = Callable[[dict[str, Any]], None]
@@ -68,6 +69,13 @@ def run_code_agent(
             tool_events.append(event)
             writer(event)
             if call.get("name") == "TodoUpdateTool":
+                persist_todos(
+                    runtime,
+                    todos,
+                    state.get("acceptance_criteria", []),
+                    state.get("verification_commands", []),
+                    state.get("plan_summary", ""),
+                )
                 writer(
                     {
                         "type": "todo_update",
@@ -136,6 +144,8 @@ def _code_agent_input(state: MokioGraphState, instruction: str, todos: list[dict
     criteria_text = "\n".join(f"- {item}" for item in state.get("acceptance_criteria", []))
     command_text = "\n".join(f"- {command}" for command in state.get("verification_commands", []))
     source_text = "\n".join(f"- {source.get('title', '')}: {source.get('url', '')}" for source in state.get("sources", []))
+    notepad = read_notepad(state["runtime"])
+    notepad_text = notepad.get("content", "")
     return (
         f"Task: {state['task']}\n\n"
         f"Planner instruction:\n{instruction}\n\n"
@@ -145,6 +155,7 @@ def _code_agent_input(state: MokioGraphState, instruction: str, todos: list[dict
         f"Verification commands:\n{command_text}\n\n"
         f"Research notes:\n{state.get('research_notes', '')}\n\n"
         f"Sources:\n{source_text}\n\n"
+        f"Workspace notepad:\n{notepad_text}\n\n"
         f"Previous verifier failure:\n{state.get('last_error', '')}"
     )
 

@@ -82,3 +82,19 @@ def test_render_context_compression(capsys) -> None:
     output = capsys.readouterr().out
     assert "1000" in output
     assert "compressed" in output
+
+
+def test_tool_result_formats_notepad_content(capsys) -> None:
+    from mokioclaw.cli.formatter import print_custom_event
+
+    print_custom_event(
+        {
+            "type": "tool_result",
+            "node": "codeAgent",
+            "name": "NotepadReadTool",
+            "result": {"ok": True, "path": "NOTEPAD.md", "content": "Important note"},
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "Important note" in output

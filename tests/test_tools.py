@@ -6,7 +6,9 @@ from mokioclaw.core.state import RuntimeState
 from mokioclaw.tools.bash_tool import bash_tool_description, run_bash
 from mokioclaw.tools.file_tools import edit_file, read_file, write_file
 from mokioclaw.tools.grep_tool import grep
+from mokioclaw.tools.notepad_tool import append_notepad, read_notepad
 from mokioclaw.tools.todo_tool import update_todo, write_todos
+from mokioclaw.tools.todo_tool import persist_todos, render_todo_markdown
 from mokioclaw.tools.web_search_tool import web_search
 
 
@@ -235,6 +237,42 @@ def test_todo_update_tool_rejects_unknown_todo() -> None:
 
     assert result["ok"] is False
     assert result["todos"][0]["status"] == "pending"
+
+
+def test_todo_markdown_persistence(tmp_path: Path) -> None:
+    state = make_state(tmp_path)
+    todos = [{"id": "todo-1", "content": "write page", "status": "pending", "note": ""}]
+
+    result = persist_todos(state, todos, ["page exists"], ["python --version"], "demo plan")
+
+    content = (tmp_path / "TODO.md").read_text(encoding="utf-8")
+    assert result["ok"] is True
+    assert "demo plan" in content
+    assert "todo-1" in content
+    assert "python --version" in content
+
+
+def test_render_todo_markdown_marks_completed() -> None:
+    content = render_todo_markdown(
+        [{"id": "todo-1", "content": "done", "status": "completed", "note": "verified"}],
+        [],
+        [],
+    )
+
+    assert "- [x]" in content
+    assert "verified" in content
+
+
+def test_notepad_append_and_read(tmp_path: Path) -> None:
+    state = make_state(tmp_path)
+
+    result = append_notepad(state, "Decision", "Use a single HTML file.")
+    read_result = read_notepad(state)
+
+    assert result["ok"] is True
+    assert (tmp_path / "NOTEPAD.md").exists()
+    assert "Decision" in read_result["content"]
+    assert "single HTML" in read_result["content"]
 
 
 def test_web_search_tool_requires_tavily_key(monkeypatch) -> None:

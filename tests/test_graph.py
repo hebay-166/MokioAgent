@@ -240,6 +240,8 @@ def test_amiya_planner_uses_fixed_verifier_commands(monkeypatch, tmp_path: Path)
     assert result["verification_commands"] == AMIYA_COMMANDS
     assert result["todos"][0]["id"] == "todo-1"
     assert result["todos"][0]["status"] == "pending"
+    assert (tmp_path / "TODO.md").exists()
+    assert "amiya_profile.html" in (tmp_path / "TODO.md").read_text(encoding="utf-8")
 
 
 def test_call_search_agent_tool_updates_state(monkeypatch, tmp_path: Path) -> None:

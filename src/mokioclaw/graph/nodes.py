@@ -18,7 +18,8 @@ from mokioclaw.prompts.stage3 import PLANNER_PROMPT, VERIFIER_PROMPT
 from mokioclaw.prompts.stage4 import CONTEXT_COMPRESSION_PROMPT
 from mokioclaw.providers.openai_provider import create_model
 from mokioclaw.tools import build_read_only_tools
-from mokioclaw.tools.todo_tool import write_todos
+from mokioclaw.tools.notepad_tool import read_notepad
+from mokioclaw.tools.todo_tool import persist_todos, write_todos
 
 
 DEFAULT_CONTEXT_TOKEN_LIMIT = 400000
@@ -53,6 +54,13 @@ def planner_node(state: MokioGraphState) -> dict[str, Any]:
     working_state: MokioGraphState = {**state}
     if not working_state.get("todos"):
         _apply_plan(working_state, _default_plan(working_state["task"]))
+        persist_todos(
+            working_state["runtime"],
+            working_state.get("todos", []),
+            working_state.get("acceptance_criteria", []),
+            working_state.get("verification_commands", []),
+            working_state.get("plan_summary", ""),
+        )
 
     model = create_model()
     planner = model.bind_tools(_build_planner_tools(working_state, writer))
@@ -382,6 +390,13 @@ def _todo_write_tool(
         state["todos"] = _todo_items(result["todos"], existing=state.get("todos", []))
         state["acceptance_criteria"] = result["acceptance_criteria"]
         state["verification_commands"] = result["verification_commands"]
+        persist_todos(
+            state["runtime"],
+            state["todos"],
+            state["acceptance_criteria"],
+            state["verification_commands"],
+            state.get("plan_summary", ""),
+        )
         writer(
             {
                 "type": "plan_snapshot",
@@ -555,6 +570,7 @@ def _context_payload(state: MokioGraphState) -> dict[str, Any]:
             {"title": source.get("title", ""), "url": source.get("url", "")}
             for source in state.get("sources", [])
         ],
+        "notepad": read_notepad(state["runtime"]).get("content", ""),
         "agent_handoffs": state.get("agent_handoffs", []),
         "code_agent_summary": state.get("code_agent_summary", ""),
         "verifier_summary": state.get("verifier_summary", ""),
@@ -601,6 +617,7 @@ def _important_files_from_state(state: MokioGraphState) -> list[str]:
 
 def _planner_input(state: MokioGraphState) -> str:
     source_text = "\n".join(f"- {source.get('title', '')}: {source.get('url', '')}" for source in state.get("sources", []))
+    notepad_text = read_notepad(state["runtime"]).get("content", "")
     return (
         f"Task: {state['task']}\n"
         f"Attempt: {state.get('attempts', 0) + 1}\n\n"
@@ -610,6 +627,7 @@ def _planner_input(state: MokioGraphState) -> str:
         f"Verification commands:\n{_list_text(state.get('verification_commands', []))}\n\n"
         f"Research notes:\n{state.get('research_notes', '')}\n\n"
         f"Sources:\n{source_text}\n\n"
+        f"Workspace notepad:\n{notepad_text}\n\n"
         f"CodeAgent summary:\n{state.get('code_agent_summary', '')}\n\n"
         f"Previous verifier failure:\n{state.get('last_error', '')}"
         f"\n\nCompressed context summary, if any:\n{state.get('context_summary', '')}"
@@ -618,6 +636,7 @@ def _planner_input(state: MokioGraphState) -> str:
 
 def _verifier_input(state: MokioGraphState) -> str:
     source_text = "\n".join(f"- {source.get('title', '')}: {source.get('url', '')}" for source in state.get("sources", []))
+    notepad_text = read_notepad(state["runtime"]).get("content", "")
     return (
         f"Task: {state['task']}\n\n"
         f"Plan: {state.get('plan_summary', '')}\n\n"
@@ -626,6 +645,7 @@ def _verifier_input(state: MokioGraphState) -> str:
         f"Verification commands:\n{_list_text(state.get('verification_commands', []))}\n\n"
         f"Research notes:\n{state.get('research_notes', '')}\n\n"
         f"Sources:\n{source_text}\n\n"
+        f"Workspace notepad:\n{notepad_text}\n\n"
         f"CodeAgent summary:\n{state.get('code_agent_summary', '')}\n\n"
         f"Compressed context summary:\n{state.get('context_summary', '')}\n\n"
         "Inspect the workspace with tools and return only verifier JSON."
