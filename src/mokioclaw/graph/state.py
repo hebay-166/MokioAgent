@@ -74,6 +74,9 @@ class MokioGraphState(TypedDict, total=False):
     intent_reason: str
     intent_confidence: float
     chat_response: str
+    session_id: str
+    session_turn: int
+    session_context: str
     last_actor_summary: str
     research_notes: str
     sources: list[SourceItem]

@@ -112,6 +112,10 @@ def main(
 @app.command("tui")
 def tui(
     task: Annotated[str | None, typer.Argument(help="Optional initial task for the Textual TUI.")] = None,
+    workspace: Annotated[
+        Path | None,
+        typer.Option("--workspace", "-w", help="Workspace for the persistent TUI coding session."),
+    ] = None,
     max_attempts: Annotated[
         int,
         typer.Option("--max-attempts", help="Maximum planner/actor/verifier attempts before finalizing."),
@@ -139,6 +143,7 @@ def tui(
 
     MokioClawTuiApp(
         initial_task=task,
+        workspace=workspace,
         max_attempts=max_attempts,
         approval_mode=approval_mode,
         checkpoint_mode=checkpoint_mode,

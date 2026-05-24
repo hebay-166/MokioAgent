@@ -60,6 +60,10 @@ Classify the user's latest input into exactly one route:
 - chat: greetings, thanks, identity/help questions, ordinary conceptual Q&A, or conversational messages that do not need workspace access.
 - workflow: any request that needs creating/editing/reading files, running commands, installing packages, searching the web, checking the current project, verifying a result, or producing a concrete deliverable.
 
+When session context is provided, use it only to understand whether the latest
+input is a continuation of prior coding work. A short follow-up like "继续",
+"修一下", or "运行测试" should be workflow if it refers to prior workspace work.
+
 Return only JSON with this shape:
 {"route":"chat"|"workflow","reason":"brief reason","confidence":0.0}
 
@@ -72,6 +76,9 @@ Answer the user directly and concisely. Do not claim that you read files,
 searched the web, ran commands, edited files, or inspected the workspace.
 If the user asks for work requiring tools or project context, say that it
 should be handled by the workflow route.
+
+If session context is provided, you may use the recent conversation summary to
+answer conversational follow-ups, but do not invent workspace facts.
 """
 
 
@@ -84,7 +91,7 @@ def intent_router_node(state: MokioGraphState) -> dict[str, Any]:
         response = create_model().invoke(
             [
                 SystemMessage(content=INTENT_ROUTER_PROMPT),
-                HumanMessage(content=f"User input:\n{state.get('task', '')}"),
+                HumanMessage(content=_router_input(state)),
             ]
         )
         parsed = _extract_json(str(response.content)) or {}
@@ -124,7 +131,7 @@ def chat_responder_node(state: MokioGraphState) -> dict[str, Any]:
         response = create_model().invoke(
             [
                 SystemMessage(content=CHAT_RESPONDER_PROMPT),
-                HumanMessage(content=str(state.get("task", ""))),
+                HumanMessage(content=_chat_input(state)),
             ]
         )
         text = str(getattr(response, "content", "") or "").strip()
@@ -707,21 +714,37 @@ def _important_files_from_state(state: MokioGraphState) -> list[str]:
 
 
 def _planner_input(state: MokioGraphState, memory: dict[str, Any]) -> str:
-    return (
-        f"Task: {state['task']}\n"
-        f"Attempt: {state.get('attempts', 0) + 1}\n\n"
-        "Layered memory snapshot:\n"
-        f"{format_layered_memory_for_prompt(memory)}"
-    )
+    parts = [
+        f"Task: {state['task']}",
+        f"Attempt: {state.get('attempts', 0) + 1}",
+    ]
+    if state.get("session_context"):
+        parts.append("Session context for this multi-turn coding session:\n" + str(state.get("session_context", "")))
+    parts.append("Layered memory snapshot:\n" + format_layered_memory_for_prompt(memory))
+    return "\n\n".join(parts)
 
 
 def _verifier_input(state: MokioGraphState, memory: dict[str, Any]) -> str:
-    return (
-        f"Task: {state['task']}\n\n"
-        "Layered memory snapshot:\n"
-        f"{format_layered_memory_for_prompt(memory)}\n\n"
-        "Inspect the workspace with tools and return only verifier JSON."
-    )
+    parts = [f"Task: {state['task']}"]
+    if state.get("session_context"):
+        parts.append("Session context for this multi-turn coding session:\n" + str(state.get("session_context", "")))
+    parts.append("Layered memory snapshot:\n" + format_layered_memory_for_prompt(memory))
+    parts.append("Inspect the workspace with tools and return only verifier JSON.")
+    return "\n\n".join(parts)
+
+
+def _router_input(state: MokioGraphState) -> str:
+    parts = [f"User input:\n{state.get('task', '')}"]
+    if state.get("session_context"):
+        parts.append("Session context:\n" + str(state.get("session_context", "")))
+    return "\n\n".join(parts)
+
+
+def _chat_input(state: MokioGraphState) -> str:
+    parts = [f"User input:\n{state.get('task', '')}"]
+    if state.get("session_context"):
+        parts.append("Session context:\n" + str(state.get("session_context", "")))
+    return "\n\n".join(parts)
 
 
 def _default_plan(task: str) -> dict[str, Any]:

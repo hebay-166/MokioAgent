@@ -16,7 +16,8 @@ from mokioclaw.cli.event_summary import EventSummary, shorten, summarize_event
 from mokioclaw.cli.tui.approval import ApprovalGate, ApprovalModal
 from mokioclaw.cli.tui.logo import render_logo
 from mokioclaw.core.approval import ApprovalDecision, ApprovalRequest
-from mokioclaw.core.agent import stream_agent_events
+from mokioclaw.core.agent import stream_session_events
+from mokioclaw.core.paths import default_workspace
 
 
 StreamFactory = Callable[..., Iterable[dict[str, Any]]]
@@ -146,11 +147,12 @@ class MokioClawTuiApp(App[None]):
         checkpoint_mode: Literal["light", "strict", "off"] = "light",
         trace_mode: Literal["on", "off"] = "on",
         resume: Path | None = None,
-        stream_factory: StreamFactory = stream_agent_events,
+        stream_factory: StreamFactory = stream_session_events,
     ) -> None:
         super().__init__()
         self.initial_task = initial_task
-        self.workspace = workspace
+        self.workspace = resume or workspace or default_workspace()
+        self.session_workspace = self.workspace
         self.max_attempts = max_attempts
         self.approval_mode = approval_mode
         self.checkpoint_mode = checkpoint_mode
@@ -162,9 +164,12 @@ class MokioClawTuiApp(App[None]):
         self.approval_count = 0
         self.failed_tool_count = 0
         self.tool_count = 0
-        self.latest_workspace = str(resume or workspace or "")
+        self.latest_workspace = str(self.session_workspace)
         self.latest_checkpoint = ""
         self.latest_trace = ""
+        self.session_id = ""
+        self.session_turn = 0
+        self.last_route = ""
         self.sidebar_text = ""
         self.todos: list[dict[str, Any]] = []
         self._state_lock = Lock()
@@ -185,8 +190,8 @@ class MokioClawTuiApp(App[None]):
                     yield Static("", id="side-state")
             with Horizontal(id="input-row"):
                 yield Static("❯", id="prompt")
-                yield Input(placeholder="Describe a task for MokioClaw, then press Enter", id="task-input")
-                yield Static("Enter run · Ctrl+L clear · Ctrl+Q quit", id="hint")
+                yield Input(placeholder="Chat or ask for coding work, then press Enter", id="task-input")
+                yield Static("Enter send · /new session · Ctrl+L clear", id="hint")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -203,6 +208,9 @@ class MokioClawTuiApp(App[None]):
         if not task or self.running:
             return
         event.input.value = ""
+        if task == "/new":
+            self.start_new_session()
+            return
         self.start_task(task, None)
 
     def on_agent_event_message(self, message: AgentEventMessage) -> None:
@@ -239,8 +247,6 @@ class MokioClawTuiApp(App[None]):
         self.todos = []
         self.failed_tool_count = 0
         self.tool_count = 0
-        self.latest_checkpoint = ""
-        self.latest_trace = ""
         self.query_one("#task-input", Input).disabled = True
         self.query_one("#status", Static).update("running")
         self._refresh_sidebar()
@@ -253,7 +259,7 @@ class MokioClawTuiApp(App[None]):
             approval_handler = self._approval_handler if self.approval_mode == "inline" else None
             for event in self.stream_factory(
                 task,
-                workspace=self.workspace if resume is None else None,
+                session_workspace=self.session_workspace,
                 max_attempts=self.max_attempts,
                 approval_mode=self.approval_mode,
                 approval_handler=approval_handler,
@@ -294,6 +300,7 @@ class MokioClawTuiApp(App[None]):
         with self._state_lock:
             if event.get("type") == "workspace":
                 self.latest_workspace = str(event.get("path", ""))
+                self.session_workspace = Path(self.latest_workspace)
                 return
             payload = event.get("event")
             if event.get("type") == "graph_event" and isinstance(payload, dict):
@@ -319,21 +326,30 @@ class MokioClawTuiApp(App[None]):
             self.latest_checkpoint = str(payload.get("path", ""))
         if payload.get("type") == "trace_summary":
             self.latest_trace = str(payload.get("trace_dir", ""))
+        if payload.get("type") == "session_started":
+            self.session_id = str(payload.get("session_id", ""))
+            self.session_turn = int(payload.get("turn_index", 0) or 0)
+            self.latest_workspace = str(payload.get("workspace", self.latest_workspace))
+        if payload.get("type") == "session_turn_started":
+            self.session_turn = int(payload.get("turn", self.session_turn) or self.session_turn)
+        if payload.get("type") == "session_turn_saved":
+            self.session_turn = int(payload.get("turn", self.session_turn) or self.session_turn)
+            self.last_route = str(payload.get("route", self.last_route))
 
     def _write_welcome(self) -> None:
         log = self.query_one("#events", RichLog)
         log.write(
             Panel(
-                "Enter a task to start. Each submitted task gets a fresh workspace by default.",
+                "Enter a message to start a persistent coding session. Use /new to open a fresh workspace.",
                 title="MokioClaw",
                 border_style="cyan",
             )
         )
 
     def _write_run_start(self, task: str, resume: Path | None) -> None:
-        mode = f"resume: {resume}" if resume is not None else "new workspace"
+        mode = f"resume: {resume}" if resume is not None else f"session workspace: {self.session_workspace}"
         self.query_one("#events", RichLog).write(
-            Panel(shorten(task, 1000) + f"\n\n{mode}", title=f"Run {self.run_count}", border_style="magenta")
+            Panel(shorten(task, 1000) + f"\n\n{mode}", title=f"Turn {self.run_count}", border_style="magenta")
         )
 
     def _write_summary(self, summary: EventSummary) -> None:
@@ -343,7 +359,7 @@ class MokioClawTuiApp(App[None]):
 
     def _refresh_sidebar(self) -> None:
         status = "running" if self.running else "ready"
-        workspace = shorten(self.latest_workspace or "(new per task)", 80)
+        workspace = shorten(self.latest_workspace or str(self.session_workspace), 80)
         checkpoint = shorten(self.latest_checkpoint or "(waiting)", 80)
         trace = shorten(self.latest_trace or "(waiting)", 80)
         tools = f"{self.tool_count} total / {self.failed_tool_count} failed"
@@ -352,7 +368,9 @@ class MokioClawTuiApp(App[None]):
         self.sidebar_text = "\n".join(
             [
                 f"status {status}",
-                f"runs {self.run_count}",
+                f"turns {self.run_count}",
+                f"session {self.session_id}",
+                f"route {self.last_route or '(none)'}",
                 f"workspace {workspace}",
                 f"checkpoint {checkpoint}",
                 f"trace {trace}",
@@ -365,7 +383,9 @@ class MokioClawTuiApp(App[None]):
         table.add_column(style="bold cyan", no_wrap=True)
         table.add_column()
         table.add_row("status", status)
-        table.add_row("runs", str(self.run_count))
+        table.add_row("turns", str(self.run_count))
+        table.add_row("session", shorten(self.session_id or "(starting)", 24))
+        table.add_row("route", self.last_route or "(none)")
         table.add_row("workspace", workspace)
         table.add_row("checkpoint", checkpoint)
         table.add_row("trace", trace)
@@ -386,3 +406,25 @@ class MokioClawTuiApp(App[None]):
         if current:
             return f"{count_text}\n{shorten(current.get('content', current.get('description', '')), 120)}"
         return count_text
+
+    def start_new_session(self) -> None:
+        if self.running:
+            self.notify("MokioClaw is already running a task.", severity="warning")
+            return
+        self.workspace = default_workspace()
+        self.session_workspace = self.workspace
+        self.resume = None
+        self.latest_workspace = str(self.session_workspace)
+        self.latest_checkpoint = ""
+        self.latest_trace = ""
+        self.session_id = ""
+        self.session_turn = 0
+        self.last_route = ""
+        self.todos = []
+        self.failed_tool_count = 0
+        self.tool_count = 0
+        self.approval_count = 0
+        self._refresh_sidebar()
+        self.query_one("#events", RichLog).write(
+            Panel(str(self.session_workspace), title="New Session", border_style="cyan")
+        )

@@ -9,6 +9,7 @@ from mokioclaw.cli.formatter import (
     render_intent_decision,
     render_memory_snapshot,
     render_plan,
+    render_session_event,
     render_sources,
     render_trace_summary,
     render_verifier,
@@ -105,6 +106,39 @@ def test_render_intent_decision(capsys) -> None:
     assert "Intent Router" in output
     assert "chat" in output
     assert "0.91" in output
+
+
+def test_render_session_event(capsys) -> None:
+    render_session_event(
+        {
+            "type": "session_started",
+            "session_id": "session-demo",
+            "workspace": "workspace-demo",
+            "turn_index": 2,
+            "resumed": False,
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "Session Started" in output
+    assert "session-demo" in output
+
+
+def test_print_custom_event_handles_session_saved(capsys) -> None:
+    from mokioclaw.cli.formatter import print_custom_event
+
+    print_custom_event(
+        {
+            "type": "session_turn_saved",
+            "turn": 1,
+            "route": "chat",
+            "summary_file": "SESSION_SUMMARY.md",
+        }
+    )
+
+    output = capsys.readouterr().out
+    assert "Session Saved" in output
+    assert "chat" in output
 
 
 def test_render_context_compression(capsys) -> None:

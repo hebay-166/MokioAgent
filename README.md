@@ -192,21 +192,22 @@ uv run mokioclaw tui
 uv run mokioclaw tui "帮我创建一个简易的贪吃蛇游戏代码，并执行检查"
 ```
 
-TUI 复用同一套 `stream_agent_events()`，不会改变 Agent 的 planner、searchAgent、codeAgent、verifier、checkpoint 或 trace 行为。界面只负责把事件流组织成更像产品壳的体验：
+TUI 使用 `stream_session_events()` 维护一个持续 coding session：一次 TUI 会话默认绑定同一个 workspace，后续输入会带着 session history、TODO、分层 memory、checkpoint 和 trace 继续推进；一次性 Rich CLI 仍使用单轮 `stream_agent_events()`。
 
 - 顶部展示 MokioClaw 状态和无文字像素 logo。
 - 中间展示事件时间线：plan、tool call/result、handoff、verifier、final、checkpoint、trace summary。
-- 右侧展示当前 workspace、todo、工具调用数、审批数、checkpoint 和 trace 路径。
-- 底部输入任务，按 Enter 执行；一个任务完成后可以继续输入下一轮任务。
-- 默认每一轮任务都会创建新的 workspace，避免多轮任务互相污染。
+- 右侧展示当前 session、workspace、todo、工具调用数、审批数、checkpoint 和 trace 路径。
+- 底部输入消息，按 Enter 发送；一个 turn 完成后可以继续输入下一轮。
+- 默认多轮复用同一个 workspace；输入 `/new` 可以切换到一个全新的 session workspace。
 - 高风险 BashTool 命令会在 TUI 内弹出审批对话框，支持 `y` / Enter 批准，`n` / Esc 拒绝。
 
-为了避免“你好”这类输入也启动完整复杂流程，LangGraph 前面增加了一个模型路由节点 `intent_router`。它会先判断本轮输入应该走轻量 `chat_responder`，还是进入 planner / codeAgent / verifier 复杂工作流。寒暄、感谢、帮助说明和普通概念问答会直接通过 `chat_response` 回复，不创建 workspace，不进入 planner，也不会写 checkpoint/trace。需要创建/修改文件、运行命令、搜索资料、验证结果或检查项目时，才进入完整 MultiAgent 工作流。
+为了避免“你好”这类输入也启动完整复杂流程，LangGraph 前面增加了一个模型路由节点 `intent_router`。它会先结合当前输入和 session context 判断应该走轻量 `chat_responder`，还是进入 planner / codeAgent / verifier 复杂工作流。寒暄、感谢、帮助说明和普通概念问答会直接通过 `chat_response` 回复，只写入 session 记录，不进入 planner，也不会写 checkpoint/trace。需要创建/修改文件、运行命令、搜索资料、验证结果、检查项目，或者“继续/修一下/运行测试”这类引用当前 workspace 的后续指令时，才进入完整 MultiAgent 工作流。
 
 TUI 子命令支持和普通 CLI 相同的运行选项：
 
 ```bash
 uv run mokioclaw tui --approval-mode inline --checkpoint-mode light --trace-mode on
+uv run mokioclaw tui --workspace .mokioclaw/workspaces/my-session
 uv run mokioclaw tui --resume .mokioclaw/workspaces/workspace-YYYYMMDD-HHMMSS-xxxxxx
 ```
 
@@ -275,7 +276,10 @@ MokioAgent/
       ├─ TODO.md       # 当前任务计划、todo、验收标准和验证命令
       ├─ NOTEPAD.md    # 长期工作笔记，压缩后仍可恢复关键信息
       ├─ HISTORY_SUMMARY.md # 压缩后的历史摘要 store
+      ├─ SESSION_SUMMARY.md # TUI 多轮 session 的可读摘要
       ├─ .mokioclaw/
+      │  ├─ session/
+      │  │  └─ session.json    # TUI session 的结构化 turn/history 状态
       │  ├─ bash-outputs/       # BashTool 长输出落盘
       │  ├─ background/         # 后台任务输出
       │  ├─ traces/

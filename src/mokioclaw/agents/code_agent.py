@@ -142,12 +142,14 @@ def _build_todo_update_tool(todos: list[dict[str, str]]) -> StructuredTool:
 
 
 def _code_agent_input(state: MokioGraphState, instruction: str, memory: dict[str, Any]) -> str:
-    return (
-        f"Task: {state['task']}\n\n"
-        f"Planner instruction:\n{instruction}\n\n"
-        "Layered memory snapshot:\n"
-        f"{format_layered_memory_for_prompt(memory)}"
-    )
+    parts = [
+        f"Task: {state['task']}",
+        f"Planner instruction:\n{instruction}",
+    ]
+    if state.get("session_context"):
+        parts.append("Session context for this multi-turn coding session:\n" + str(state.get("session_context", "")))
+    parts.append("Layered memory snapshot:\n" + format_layered_memory_for_prompt(memory))
+    return "\n\n".join(parts)
 
 
 def _last_ai_content(messages: list[Any]) -> str:
